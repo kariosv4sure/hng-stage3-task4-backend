@@ -7,6 +7,7 @@ from app.core.oauth import (
     build_authorization_url,
     exchange_code_for_token,
     get_github_user,
+    extract_state,   # ✅ FIXED IMPORT
 )
 from app.core.security import verify_access_token
 from app.services.auth_service import AuthService
@@ -16,7 +17,6 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
 def _get_redirect_uri(request: Request) -> str:
-    """Build absolute redirect URI from PUBLIC_URL env or request."""
     from app.config import PUBLIC_URL
 
     if PUBLIC_URL:
@@ -27,25 +27,24 @@ def _get_redirect_uri(request: Request) -> str:
 
 
 def _is_secure(request: Request) -> bool:
-    """Check if request is over HTTPS."""
     return request.url.scheme == "https"
 
 
 def _set_auth_cookies(response, tokens: dict, request: Request):
-    """Set access + refresh tokens as HTTP-only cookies."""
     secure = _is_secure(request)
 
     response.set_cookie(
-        key="access_token",
-        value=tokens["access_token"],
+        "access_token",
+        tokens["access_token"],
         httponly=True,
         secure=secure,
         samesite="lax",
         max_age=900,
     )
+
     response.set_cookie(
-        key="refresh_token",
-        value=tokens["refresh_token"],
+        "refresh_token",
+        tokens["refresh_token"],
         httponly=True,
         secure=secure,
         samesite="lax",
@@ -57,48 +56,39 @@ def _set_auth_cookies(response, tokens: dict, request: Request):
 # LOGIN
 # -------------------------
 @router.get("/login")
-async def login(
-    request: Request,
-    client: str = Query("web"),
-):
-    """Start GitHub OAuth login flow."""
+async def login(request: Request, client: str = Query("web")):
 
     if client not in ("cli", "web"):
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=400,
             detail={"status": "error", "message": "Invalid client type"},
         )
 
     redirect_uri = _get_redirect_uri(request)
     auth_data = build_authorization_url(redirect_uri)
 
+    # CLI → just return state (contains PKCE inside)
     if client == "cli":
         return JSONResponse(
             content={
                 "auth_url": auth_data["auth_url"],
                 "state": auth_data["state"],
-                "code_verifier": auth_data["code_verifier"],
             }
         )
 
+    # Web → redirect + store state
     response = RedirectResponse(url=auth_data["auth_url"])
+
     secure = _is_secure(request)
     response.set_cookie(
-        key="oauth_state",
-        value=auth_data["state"],
+        "oauth_state",
+        auth_data["state"],
         httponly=True,
         secure=secure,
         samesite="lax",
         max_age=600,
     )
-    response.set_cookie(
-        key="code_verifier",
-        value=auth_data["code_verifier"],
-        httponly=True,
-        secure=secure,
-        samesite="lax",
-        max_age=600,
-    )
+
     return response
 
 
@@ -113,61 +103,50 @@ async def callback(
     client: str = Query("web"),
     db: Session = Depends(get_db),
 ):
-    """Handle GitHub OAuth callback for CLI and Web clients."""
 
     redirect_uri = _get_redirect_uri(request)
-    code_verifier = request.cookies.get("code_verifier")
-    stored_state = request.cookies.get("oauth_state")
+
+    # 🔥 FIX: decode state properly
+    decoded = extract_state(state)
+    code_verifier = decoded.get("code_verifier")
 
     if not code_verifier:
         raise HTTPException(
             status_code=400,
-            detail={"status": "error", "message": "Missing code_verifier"},
+            detail={"status": "error", "message": "Invalid state payload"},
         )
 
-    if stored_state != state:
-        raise HTTPException(
-            status_code=400,
-            detail={"status": "error", "message": "Invalid OAuth state"},
-        )
+    token_data = await exchange_code_for_token(
+        code,
+        redirect_uri,
+        code_verifier
+    )
 
-    # Exchange GitHub code for token
-    token_data = await exchange_code_for_token(code, redirect_uri, code_verifier)
-
-    # Fetch GitHub user
     github_user = await get_github_user(token_data["access_token"])
 
-    # Create or update local user
     user = AuthService.get_or_create_user(db, github_user)
-
-    # Issue tokens
     tokens = AuthService.create_tokens(db, user)
 
     if client == "cli":
         return JSONResponse(content=tokens)
 
-    response = RedirectResponse(url="/dashboard.html")
+    response = RedirectResponse(url="/docs")
     _set_auth_cookies(response, tokens, request)
-
-    secure = _is_secure(request)
-    response.delete_cookie("oauth_state", secure=secure)
-    response.delete_cookie("code_verifier", secure=secure)
 
     return response
 
 
 # -------------------------
-# REFRESH TOKEN
+# REFRESH
 # -------------------------
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh_token(request: RefreshRequest, db: Session = Depends(get_db)):
-    """Refresh expired access token."""
 
     tokens = AuthService.refresh_access_token(db, request.refresh_token)
 
     if not tokens:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
+            status_code=401,
             detail={"status": "error", "message": "Invalid refresh token"},
         )
 
@@ -175,35 +154,24 @@ async def refresh_token(request: RefreshRequest, db: Session = Depends(get_db)):
 
 
 # -------------------------
-# CURRENT USER
+# ME
 # -------------------------
 @router.get("/me", response_model=UserResponse)
 async def me(request: Request, db: Session = Depends(get_db)):
-    """Get current authenticated user."""
 
     token = request.cookies.get("access_token")
 
     if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"status": "error", "message": "Not authenticated"},
-        )
+        raise HTTPException(401, "Not authenticated")
 
     payload = verify_access_token(token)
 
     if not payload:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"status": "error", "message": "Invalid or expired token"},
-        )
+        raise HTTPException(401, "Invalid token")
 
     user = AuthService.get_user_by_id(db, payload["sub"])
 
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"status": "error", "message": "User not found"},
-        )
+        raise HTTPException(404, "User not found")
 
     return user
-
