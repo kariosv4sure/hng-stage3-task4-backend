@@ -48,3 +48,6 @@ except ValueError:
 # -------------------
 RATE_LIMIT_DEFAULT = os.getenv("RATE_LIMIT_DEFAULT", "100/minute")
 RATE_LIMIT_AUTH = os.getenv("RATE_LIMIT_AUTH", "10/minute")
+
+# Public URL (for OAuth redirects behind proxies)
+PUBLIC_URL = os.getenv("PUBLIC_URL", "")
