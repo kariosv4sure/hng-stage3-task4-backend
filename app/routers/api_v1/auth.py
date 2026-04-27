@@ -9,19 +9,59 @@ from app.core.oauth import (
     get_github_user,
 )
 from app.core.security import verify_access_token
-from app.models.user import User
 from app.services.auth_service import AuthService
 from app.schemas.auth import RefreshRequest, TokenResponse, UserResponse
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
+def _get_redirect_uri(request: Request) -> str:
+    """Build absolute redirect URI from PUBLIC_URL env or request."""
+    from app.config import PUBLIC_URL
+
+    if PUBLIC_URL:
+        return f"{PUBLIC_URL.rstrip('/')}/api/v1/auth/callback"
+
+    base = str(request.base_url).rstrip("/")
+    return f"{base}/api/v1/auth/callback"
+
+
+def _is_secure(request: Request) -> bool:
+    """Check if request is over HTTPS."""
+    return request.url.scheme == "https"
+
+
+def _set_auth_cookies(response, tokens: dict, request: Request):
+    """Set access + refresh tokens as HTTP-only cookies."""
+    secure = _is_secure(request)
+
+    response.set_cookie(
+        key="access_token",
+        value=tokens["access_token"],
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+        max_age=900,
+    )
+    response.set_cookie(
+        key="refresh_token",
+        value=tokens["refresh_token"],
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+        max_age=604800,
+    )
+
+
+# -------------------------
+# LOGIN
+# -------------------------
 @router.get("/login")
 async def login(
+    request: Request,
     client: str = Query("web"),
-    redirect_uri: str = Query(None),
 ):
-    """Start GitHub OAuth flow."""
+    """Start GitHub OAuth login flow."""
 
     if client not in ("cli", "web"):
         raise HTTPException(
@@ -29,9 +69,7 @@ async def login(
             detail={"status": "error", "message": "Invalid client type"},
         )
 
-    if not redirect_uri:
-        redirect_uri = "http://localhost:8000/api/v1/auth/callback"
-
+    redirect_uri = _get_redirect_uri(request)
     auth_data = build_authorization_url(redirect_uri)
 
     if client == "cli":
@@ -44,22 +82,40 @@ async def login(
         )
 
     response = RedirectResponse(url=auth_data["auth_url"])
-    response.set_cookie("oauth_state", auth_data["state"], httponly=True, max_age=600)
-    response.set_cookie("code_verifier", auth_data["code_verifier"], httponly=True, max_age=600)
+    secure = _is_secure(request)
+    response.set_cookie(
+        key="oauth_state",
+        value=auth_data["state"],
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+        max_age=600,
+    )
+    response.set_cookie(
+        key="code_verifier",
+        value=auth_data["code_verifier"],
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+        max_age=600,
+    )
     return response
 
 
+# -------------------------
+# CALLBACK
+# -------------------------
 @router.get("/callback")
 async def callback(
     code: str,
     state: str,
+    request: Request,
     client: str = Query("web"),
-    redirect_uri: str = Query("http://localhost:8000/api/v1/auth/callback"),
-    request: Request = None,
     db: Session = Depends(get_db),
 ):
-    """Handle GitHub OAuth callback."""
+    """Handle GitHub OAuth callback for CLI and Web clients."""
 
+    redirect_uri = _get_redirect_uri(request)
     code_verifier = request.cookies.get("code_verifier")
     stored_state = request.cookies.get("oauth_state")
 
@@ -76,33 +132,36 @@ async def callback(
         )
 
     # Exchange GitHub code for token
-    token_data = await exchange_code_for_token(
-        code,
-        redirect_uri,
-        code_verifier
-    )
+    token_data = await exchange_code_for_token(code, redirect_uri, code_verifier)
 
+    # Fetch GitHub user
     github_user = await get_github_user(token_data["access_token"])
 
+    # Create or update local user
     user = AuthService.get_or_create_user(db, github_user)
+
+    # Issue tokens
     tokens = AuthService.create_tokens(db, user)
 
     if client == "cli":
         return JSONResponse(content=tokens)
 
     response = RedirectResponse(url="/dashboard.html")
-    response.set_cookie("access_token", tokens["access_token"], httponly=True, max_age=900)
-    response.set_cookie("refresh_token", tokens["refresh_token"], httponly=True, max_age=604800)
+    _set_auth_cookies(response, tokens, request)
 
-    response.delete_cookie("oauth_state")
-    response.delete_cookie("code_verifier")
+    secure = _is_secure(request)
+    response.delete_cookie("oauth_state", secure=secure)
+    response.delete_cookie("code_verifier", secure=secure)
 
     return response
 
 
+# -------------------------
+# REFRESH TOKEN
+# -------------------------
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh_token(request: RefreshRequest, db: Session = Depends(get_db)):
-    """Refresh access token."""
+    """Refresh expired access token."""
 
     tokens = AuthService.refresh_access_token(db, request.refresh_token)
 
@@ -115,6 +174,9 @@ async def refresh_token(request: RefreshRequest, db: Session = Depends(get_db)):
     return tokens
 
 
+# -------------------------
+# CURRENT USER
+# -------------------------
 @router.get("/me", response_model=UserResponse)
 async def me(request: Request, db: Session = Depends(get_db)):
     """Get current authenticated user."""
@@ -135,7 +197,7 @@ async def me(request: Request, db: Session = Depends(get_db)):
             detail={"status": "error", "message": "Invalid or expired token"},
         )
 
-    user = db.query(User).filter(User.id == payload["sub"]).first()
+    user = AuthService.get_user_by_id(db, payload["sub"])
 
     if not user:
         raise HTTPException(
@@ -144,3 +206,4 @@ async def me(request: Request, db: Session = Depends(get_db)):
         )
 
     return user
+
