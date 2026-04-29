@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import httpx
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
@@ -10,13 +11,22 @@ from app.database import init_db, engine
 from app.middleware.logging import request_logging_middleware
 from app.middleware.rate_limit import limiter
 from app.routers.api_v1 import auth, profiles, export
+from app.seed import seed_profiles
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Initialize DB
     init_db()
+
+    # Seed Stage 2 data into Stage 3 DB
+    seed_profiles()
+
+    # HTTP client
     app.state.http_client = httpx.AsyncClient(timeout=10.0)
+
     yield
+
     await app.state.http_client.aclose()
     engine.dispose()
 
@@ -28,7 +38,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# ✅ FIXED: MUST NOT BE "*"
+# CORS (frontend access)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://hng-stage3-task4-web.vercel.app"],
@@ -37,9 +47,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Logging middleware
 app.middleware("http")(request_logging_middleware)
+
+# Rate limiter
 app.state.limiter = limiter
 
+
+# ----------------------------
+# Exception Handlers
+# ----------------------------
 
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request: Request, exc: RequestValidationError):
@@ -65,6 +82,10 @@ async def global_error_handler(request: Request, exc: Exception):
     )
 
 
+# ----------------------------
+# Routes
+# ----------------------------
+
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(profiles.router, prefix="/api/v1")
 app.include_router(export.router, prefix="/api/v1")
@@ -72,7 +93,11 @@ app.include_router(export.router, prefix="/api/v1")
 
 @app.get("/")
 async def root():
-    return {"app": "Insighta Labs+", "version": "3.0.0", "status": "running"}
+    return {
+        "app": "Insighta Labs+",
+        "version": "3.0.0",
+        "status": "running"
+    }
 
 
 @app.get("/health")
