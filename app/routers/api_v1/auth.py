@@ -146,3 +146,11 @@ async def me(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="User not found")
 
     return user
+
+@router.post("/logout")
+async def logout():
+    response = JSONResponse(content={"message": "Logged out"})
+    response.delete_cookie("access_token", secure=True, samesite="none")
+    response.delete_cookie("refresh_token", secure=True, samesite="none")
+    return response
+
