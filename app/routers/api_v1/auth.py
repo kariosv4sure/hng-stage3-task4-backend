@@ -84,13 +84,18 @@ async def callback(
     client: str = Query("web"),
     db: Session = Depends(get_db),
 ):
-    redirect_uri = _get_redirect_uri(request)
+    # 🔥 FORCE FIX: CLI must ALWAYS use stable redirect URI
+    if client == "cli":
+        redirect_uri = "https://hng-stage3-task4-backend-production.up.railway.app/api/v1/auth/callback"
+    else:
+        redirect_uri = _get_redirect_uri(request)
 
     decoded = extract_state(state)
-    code_verifier = decoded.get("code_verifier")
 
-    if not code_verifier:
-        raise HTTPException(status_code=400, detail="Invalid state")
+    if not decoded or "code_verifier" not in decoded:
+        raise HTTPException(status_code=400, detail="Invalid OAuth state")
+
+    code_verifier = decoded["code_verifier"]
 
     token_data = await exchange_code_for_token(code, redirect_uri, code_verifier)
     github_user = await get_github_user(token_data["access_token"])
@@ -98,9 +103,15 @@ async def callback(
     user = AuthService.get_or_create_user(db, github_user)
     tokens = AuthService.create_tokens(db, user)
 
+    # 🔥 CLI FLOW (NO REDIRECTS EVER)
     if client == "cli":
-        return JSONResponse(content=tokens)
+        return JSONResponse(content={
+            "access_token": tokens["access_token"],
+            "refresh_token": tokens["refresh_token"],
+            "token_type": "bearer"
+        })
 
+    # 🌐 WEB FLOW ONLY
     response = RedirectResponse(url=f"{WEB_PORTAL_URL}/dashboard.html")
     _set_auth_cookies(response, tokens)
 
