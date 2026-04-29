@@ -1,7 +1,9 @@
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+
 from sqlalchemy.orm import Session
+
 from app.models.user import User, UserRole
 from app.models.token import RefreshToken
 from app.utils.uuid7 import generate_uuid7
@@ -16,7 +18,12 @@ class AuthService:
         """Fetch existing GitHub user or create a new one."""
 
         github_id = str(github_data["id"])
-        user = db.query(User).filter(User.github_id == github_id).first()
+
+        user = (
+            db.query(User)
+            .filter(User.github_id == github_id)
+            .first()
+        )
 
         if user:
             user.github_username = github_data["login"]
@@ -33,6 +40,8 @@ class AuthService:
             github_username=github_data["login"],
             email=github_data.get("email"),
             role=UserRole.ANALYST,
+            is_active=True,
+            created_at=datetime.now(timezone.utc),
         )
 
         db.add(user)
@@ -42,10 +51,23 @@ class AuthService:
         return user
 
     @staticmethod
+    def get_user_by_id(db: Session, user_id: str) -> Optional[User]:
+        """Fetch user by ID (required for /auth/me)."""
+
+        return (
+            db.query(User)
+            .filter(User.id == user_id, User.is_active.is_(True))
+            .first()
+        )
+
+    @staticmethod
     def create_tokens(db: Session, user: User) -> dict:
         """Generate access + refresh token pair."""
 
-        access_token = create_access_token(str(user.id), user.role.value)
+        access_token = create_access_token(
+            user_id=str(user.id),
+            role=user.role.value,
+        )
 
         refresh_raw = secrets.token_urlsafe(64)
         refresh_hash = hash_token(refresh_raw)
@@ -61,6 +83,7 @@ class AuthService:
                 token_hash=refresh_hash,
                 expires_at=expires_at,
                 is_revoked=False,
+                created_at=datetime.now(timezone.utc),
             )
         )
 
@@ -98,7 +121,10 @@ class AuthService:
 
         user = (
             db.query(User)
-            .filter(User.id == stored.user_id, User.is_active.is_(True))
+            .filter(
+                User.id == stored.user_id,
+                User.is_active.is_(True),
+            )
             .first()
         )
 
