@@ -25,6 +25,7 @@ class AuthService:
             .first()
         )
 
+        # ✅ UPDATE EXISTING USER
         if user:
             user.github_username = github_data["login"]
             user.email = github_data.get("email")
@@ -34,12 +35,17 @@ class AuthService:
             db.refresh(user)
             return user
 
+        # 👑 FIRST USER = ADMIN LOGIC
+        existing_users = db.query(User).count()
+        role = UserRole.ADMIN if existing_users == 0 else UserRole.ANALYST
+
+        # 🆕 CREATE NEW USER
         user = User(
             id=generate_uuid7(),
             github_id=github_id,
             github_username=github_data["login"],
             email=github_data.get("email"),
-            role=UserRole.ANALYST,
+            role=role,
             is_active=True,
             created_at=datetime.now(timezone.utc),
         )
@@ -93,7 +99,7 @@ class AuthService:
             "access_token": access_token,
             "refresh_token": refresh_raw,
             "token_type": "bearer",
-            "expires_in": 60 * 15,  # 15 minutes
+            "expires_in": 60 * 15,
         }
 
     @staticmethod
@@ -115,7 +121,6 @@ class AuthService:
         if not stored:
             return None
 
-        # revoke old refresh token (rotation)
         stored.is_revoked = True
         db.flush()
 
