@@ -12,9 +12,6 @@ from app.middleware.rate_limit import limiter
 from app.routers.api_v1 import auth, profiles, export
 
 
-# -----------------------------
-# Lifespan (startup/shutdown)
-# -----------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
@@ -24,9 +21,6 @@ async def lifespan(app: FastAPI):
     engine.dispose()
 
 
-# -----------------------------
-# App Init
-# -----------------------------
 app = FastAPI(
     title="Insighta Labs+",
     description="Profile Intelligence System - Stage 3",
@@ -34,28 +28,19 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# -----------------------------
-# CORS
-# -----------------------------
+# ✅ FIXED: MUST NOT BE "*"
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://hng-stage3-task4-web.vercel.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# -----------------------------
-# Middleware
-# -----------------------------
 app.middleware("http")(request_logging_middleware)
-
 app.state.limiter = limiter
 
 
-# -----------------------------
-# Exception Handlers
-# -----------------------------
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request: Request, exc: RequestValidationError):
     return JSONResponse(
@@ -80,24 +65,14 @@ async def global_error_handler(request: Request, exc: Exception):
     )
 
 
-# -----------------------------
-# Routers (Stage 3 API)
-# -----------------------------
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(profiles.router, prefix="/api/v1")
 app.include_router(export.router, prefix="/api/v1")
 
 
-# -----------------------------
-# Health Routes
-# -----------------------------
 @app.get("/")
 async def root():
-    return {
-        "app": "Insighta Labs+",
-        "version": "3.0.0",
-        "status": "running",
-    }
+    return {"app": "Insighta Labs+", "version": "3.0.0", "status": "running"}
 
 
 @app.get("/health")
