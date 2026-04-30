@@ -149,6 +149,11 @@ async def api_profiles_post(request: Request, db: Session = Depends(get_db)):
     from app.services.profile_service import ProfileService
     try:
         body = await request.json()
+        body.setdefault("age", 0)
+        body.setdefault("country_id", "")
+        body.setdefault("country_name", "")
+        body.setdefault("gender_probability", 0.5)
+        body.setdefault("country_probability", 0.5)
     except Exception:
         raise HTTPException(status_code=400, detail={"status": "error", "message": "Invalid JSON"})
 
@@ -190,6 +195,11 @@ async def api_export_profiles():
 
 @app.get("/api/v1/export/profiles")
 async def api_v1_export_profiles():
+    return await api_export_profiles()
+
+
+@app.get("/api/profiles/export")
+async def api_profiles_export_csv():
     return await api_export_profiles()
 
 
