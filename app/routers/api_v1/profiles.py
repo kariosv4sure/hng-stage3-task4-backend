@@ -4,7 +4,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status, Request
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies.roles import require_analyst
 from app.core.security import verify_access_token
 from app.schemas.profile import (
     ProfileResponse,
@@ -19,8 +18,8 @@ from app.utils.parser import parse_query
 router = APIRouter(prefix="/profiles", tags=["Profiles"])
 
 
-def get_current_user_role(request: Request, db: Session) -> dict:
-    """Extract user info from token for role checks"""
+def get_current_user(request: Request) -> dict | None:
+    """Extract and verify user from token"""
     token = request.cookies.get("access_token")
     if not token:
         auth = request.headers.get("Authorization", "")
@@ -28,9 +27,25 @@ def get_current_user_role(request: Request, db: Session) -> dict:
             token = auth[7:]
     if not token:
         return None
-    
+
     payload = verify_access_token(token)
     return payload if payload else None
+
+
+def require_auth(request: Request):
+    """Require authentication - raises 401 if not authenticated"""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail={"status": "error", "message": "Not authenticated"})
+    return user
+
+
+def require_admin(request: Request):
+    """Require admin role - raises 403 if not admin"""
+    user = require_auth(request)
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail={"status": "error", "message": "Admin access required"})
+    return user
 
 
 def handle_value_error(e: Exception):
@@ -56,7 +71,9 @@ async def get_all_profiles(
     limit: int = Query(10, ge=1, le=50),
     db: Session = Depends(get_db),
 ):
-    """Get profiles with filtering + pagination."""
+    """Get profiles with filtering + pagination (auth required)."""
+    require_auth(request)
+
     try:
         profiles, total = ProfileService.get_all_filtered(
             db=db,
@@ -91,9 +108,12 @@ async def search_profiles(
     order: Optional[str] = Query("asc"),
     page: int = Query(1, ge=1),
     limit: int = Query(10, ge=1, le=50),
+    request: Request = None,
     db: Session = Depends(get_db),
 ):
-    """Natural language search."""
+    """Natural language search (auth required)."""
+    require_auth(request)
+
     try:
         filters = parse_query(q)
     except ValueError as e:
@@ -127,9 +147,12 @@ async def search_profiles(
 @router.get("/{profile_id}", response_model=GetSuccessResponse)
 async def get_profile(
     profile_id: str,
+    request: Request,
     db: Session = Depends(get_db),
 ):
-    """Get single profile by ID."""
+    """Get single profile by ID (auth required)."""
+    require_auth(request)
+
     profile = ProfileService.get_by_id(db, profile_id)
     if not profile:
         raise HTTPException(
@@ -149,11 +172,7 @@ async def create_profile(
     db: Session = Depends(get_db),
 ):
     """Create a new profile (admin only)."""
-    user = get_current_user_role(request, db)
-    if not user:
-        raise HTTPException(status_code=401, detail={"status": "error", "message": "Not authenticated"})
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail={"status": "error", "message": "Only admins can create profiles"})
+    require_admin(request)
 
     try:
         body = await request.json()
@@ -178,11 +197,7 @@ async def delete_profile(
     db: Session = Depends(get_db),
 ):
     """Delete profile by ID (admin only)."""
-    user = get_current_user_role(request, db)
-    if not user:
-        raise HTTPException(status_code=401, detail={"status": "error", "message": "Not authenticated"})
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail={"status": "error", "message": "Only admins can delete profiles"})
+    require_admin(request)
 
     profile = ProfileService.get_by_id(db, profile_id)
     if not profile:
