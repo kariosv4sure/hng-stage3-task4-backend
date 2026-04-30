@@ -10,38 +10,37 @@ from app.config import (
     GITHUB_USER_URL,
     GITHUB_AUTH_URL,
 )
-from app.core.security import generate_pkce_pair, generate_state
+from app.core.security import generate_state
 
 
+# ─────────────────────────────
+# ENCODING HELPERS
+# ─────────────────────────────
 def _encode(data: dict) -> str:
-    return base64.urlsafe_b64encode(json.dumps(data).encode()).decode()
+    return base64.urlsafe_b64encode(
+        json.dumps(data).encode()
+    ).decode()
 
 
 def _decode(data: str) -> dict:
-    return json.loads(base64.urlsafe_b64decode(data.encode()).decode())
+    return json.loads(
+        base64.urlsafe_b64decode(data.encode()).decode()
+    )
 
 
 # ─────────────────────────────
-# AUTH URL BUILDER
+# AUTH URL BUILDER (CLEAN)
 # ─────────────────────────────
 def build_authorization_url(redirect_uri: str, client: str = "web") -> dict:
+    """
+    GitHub OAuth App flow (NO PKCE).
+    Works for both CLI and Web.
+    """
+
     state_payload = {
         "state": generate_state(),
-        "client": client
+        "client": client,
     }
-
-    code_verifier = None
-    pkce_params = ""
-
-    # ONLY web uses PKCE
-    if client == "web":
-        code_verifier, code_challenge = generate_pkce_pair()
-        state_payload["code_verifier"] = code_verifier
-
-        pkce_params = (
-            f"&code_challenge={code_challenge}"
-            f"&code_challenge_method=S256"
-        )
 
     encoded_state = _encode(state_payload)
 
@@ -51,7 +50,6 @@ def build_authorization_url(redirect_uri: str, client: str = "web") -> dict:
         f"redirect_uri={redirect_uri}&"
         f"scope=read:user user:email&"
         f"state={encoded_state}"
-        f"{pkce_params}"
     )
 
     return {
@@ -61,7 +59,7 @@ def build_authorization_url(redirect_uri: str, client: str = "web") -> dict:
 
 
 # ─────────────────────────────
-# STATE DECODER
+# STATE DECODER (SAFE)
 # ─────────────────────────────
 def extract_state(state: str) -> dict | None:
     try:
@@ -71,43 +69,46 @@ def extract_state(state: str) -> dict | None:
 
 
 # ─────────────────────────────
-# TOKEN EXCHANGE
+# TOKEN EXCHANGE (FIXED)
 # ─────────────────────────────
-async def exchange_code_for_token(
-    code: str,
-    redirect_uri: str,
-    code_verifier: str | None = None
-):
-    payload = {
-        "client_id": GITHUB_CLIENT_ID,
-        "client_secret": GITHUB_CLIENT_SECRET,
-        "code": code,
-        "redirect_uri": redirect_uri,
-    }
-
-    if code_verifier:
-        payload["code_verifier"] = code_verifier
+async def exchange_code_for_token(code: str):
+    """
+    GitHub OAuth App exchange.
+    NO redirect_uri, NO PKCE.
+    """
 
     async with httpx.AsyncClient() as client:
         response = await client.post(
             GITHUB_TOKEN_URL,
-            data=payload,
-            headers={"Accept": "application/json"},
+            data={
+                "client_id": GITHUB_CLIENT_ID,
+                "client_secret": GITHUB_CLIENT_SECRET,
+                "code": code,
+            },
+            headers={
+                "Accept": "application/json",
+            },
         )
 
     data = response.json()
 
     if response.status_code != 200 or "access_token" not in data:
+        # 🔥 Debug hook (super important for future issues)
+        print("OAUTH ERROR RESPONSE:", data)
+
         raise HTTPException(
             status_code=400,
-            detail={"status": "error", "message": "OAuth token exchange failed"},
+            detail={
+                "status": "error",
+                "message": "OAuth token exchange failed"
+            },
         )
 
     return data
 
 
 # ─────────────────────────────
-# GITHUB USER
+# GET GITHUB USER
 # ─────────────────────────────
 async def get_github_user(access_token: str):
     async with httpx.AsyncClient() as client:
@@ -119,10 +120,15 @@ async def get_github_user(access_token: str):
             },
         )
 
+    data = response.json()
+
     if response.status_code != 200:
         raise HTTPException(
             status_code=400,
-            detail={"status": "error", "message": "Failed to fetch GitHub user"},
+            detail={
+                "status": "error",
+                "message": "Failed to fetch GitHub user"
+            },
         )
 
-    return response.json()
+    return data
