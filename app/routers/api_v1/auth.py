@@ -25,7 +25,6 @@ WEB_PORTAL_URL = "https://hng-stage3-task4-web.vercel.app"
 def _get_redirect_uri(request: Request) -> str:
     if PUBLIC_URL:
         return f"{PUBLIC_URL.rstrip('/')}/api/v1/auth/callback"
-
     return f"{str(request.base_url).rstrip('/')}/api/v1/auth/callback"
 
 
@@ -67,47 +66,61 @@ async def login(request: Request, client: str = Query("web")):
 
 
 # ─────────────────────────────
-# CALLBACK
+# CALLBACK (FIXED PROPERLY)
 # ─────────────────────────────
 @router.get("/callback")
 async def callback(
     code: str,
     state: str,
     request: Request,
-    client: str = Query("web"),
     db: Session = Depends(get_db),
 ):
     redirect_uri = _get_redirect_uri(request)
 
     decoded = extract_state(state)
 
-    # HARD FIX: safe failure instead of crash loop
     if not decoded:
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
 
-    code_verifier = decoded.get("code_verifier")
+    client_type = decoded.get("client")
 
-    # CLI = NO PKCE
-    if client == "cli":
-        code_verifier = None
+    # 🔥 CLI FLOW (NO REDIRECT EVER)
+    if client_type == "cli":
+        token_data = await exchange_code_for_token(
+            code,
+            redirect_uri,
+            code_verifier=None
+        )
 
-    token_data = await exchange_code_for_token(code, redirect_uri, code_verifier)
-    github_user = await get_github_user(token_data["access_token"])
+        github_user = await get_github_user(token_data["access_token"])
 
-    user = AuthService.get_or_create_user(db, github_user)
-    tokens = AuthService.create_tokens(db, user)
+        user = AuthService.get_or_create_user(db, github_user)
+        tokens = AuthService.create_tokens(db, user)
 
-    if client == "cli":
         return JSONResponse({
             "access_token": tokens["access_token"],
             "refresh_token": tokens["refresh_token"],
             "token_type": "bearer",
         })
 
+    # 🌐 WEB FLOW
+    code_verifier = decoded.get("code_verifier")
+
+    token_data = await exchange_code_for_token(
+        code,
+        redirect_uri,
+        code_verifier
+    )
+
+    github_user = await get_github_user(token_data["access_token"])
+
+    user = AuthService.get_or_create_user(db, github_user)
+    tokens = AuthService.create_tokens(db, user)
+
     response = RedirectResponse(url=f"{WEB_PORTAL_URL}/dashboard.html")
     _set_auth_cookies(response, tokens)
 
-    response.delete_cookie("oauth_state")
+    response.delete_cookie("oauth_state", httponly=True, secure=True, samesite="none")
     return response
 
 

@@ -1,7 +1,6 @@
 import json
 import base64
 import httpx
-
 from fastapi import HTTPException
 
 from app.config import (
@@ -23,19 +22,18 @@ def _decode(data: str) -> dict:
 
 
 # ─────────────────────────────
-# AUTH URL BUILDER (FIXED)
+# AUTH URL BUILDER
 # ─────────────────────────────
 def build_authorization_url(redirect_uri: str, client: str = "web") -> dict:
-    """
-    CLI = NO PKCE
-    WEB = PKCE enabled
-    """
-
-    state_payload = {"state": generate_state(), "client": client}
+    state_payload = {
+        "state": generate_state(),
+        "client": client
+    }
 
     code_verifier = None
     pkce_params = ""
 
+    # ONLY web uses PKCE
     if client == "web":
         code_verifier, code_challenge = generate_pkce_pair()
         state_payload["code_verifier"] = code_verifier
@@ -59,12 +57,11 @@ def build_authorization_url(redirect_uri: str, client: str = "web") -> dict:
     return {
         "auth_url": auth_url,
         "state": encoded_state,
-        "code_verifier": code_verifier,
     }
 
 
 # ─────────────────────────────
-# STATE DECODER (SAFE)
+# STATE DECODER
 # ─────────────────────────────
 def extract_state(state: str) -> dict | None:
     try:
@@ -74,7 +71,7 @@ def extract_state(state: str) -> dict | None:
 
 
 # ─────────────────────────────
-# TOKEN EXCHANGE (FIXED)
+# TOKEN EXCHANGE
 # ─────────────────────────────
 async def exchange_code_for_token(
     code: str,
@@ -88,7 +85,6 @@ async def exchange_code_for_token(
         "redirect_uri": redirect_uri,
     }
 
-    # ONLY include for web flow
     if code_verifier:
         payload["code_verifier"] = code_verifier
 
@@ -111,7 +107,7 @@ async def exchange_code_for_token(
 
 
 # ─────────────────────────────
-# GITHUB USER FETCH
+# GITHUB USER
 # ─────────────────────────────
 async def get_github_user(access_token: str):
     async with httpx.AsyncClient() as client:
