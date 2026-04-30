@@ -17,17 +17,28 @@ from app.core.security import generate_state
 # ENCODING HELPERS
 # -------------------------
 def _encode(data: dict) -> str:
+    """Encode dictionary to URL-safe base64 string"""
     return base64.urlsafe_b64encode(json.dumps(data).encode()).decode()
 
 
 def _decode(data: str) -> dict:
-    return json.loads(base64.urlsafe_b64decode(data.encode()).decode())
+    """Decode URL-safe base64 string back to dictionary"""
+    try:
+        # Add padding if needed
+        padding = 4 - (len(data) % 4)
+        if padding != 4:
+            data += "=" * padding
+        return json.loads(base64.urlsafe_b64decode(data.encode()).decode())
+    except Exception as e:
+        print(f"State decode error: {e}")
+        return None
 
 
 # -------------------------
 # BUILD AUTH URL
 # -------------------------
 def build_authorization_url(redirect_uri: str, client: str = "web") -> dict:
+    """Build GitHub OAuth authorization URL"""
     state_payload = {
         "state": generate_state(),
         "client": client,
@@ -50,16 +61,31 @@ def build_authorization_url(redirect_uri: str, client: str = "web") -> dict:
 # STATE PARSE
 # -------------------------
 def extract_state(state: str) -> dict | None:
+    """Extract and decode state parameter"""
     try:
-        return _decode(state)
-    except Exception:
+        from urllib.parse import unquote
+        
+        # First URL decode the state
+        decoded_state = unquote(state)
+        print(f"Raw state: {state}")
+        print(f"Decoded state: {decoded_state}")
+        
+        # Then decode the base64
+        result = _decode(decoded_state)
+        print(f"Parsed state: {result}")
+        return result
+    except Exception as e:
+        print(f"State extraction error: {e}")
         return None
 
 
 # -------------------------
-# TOKEN EXCHANGE (FIXED CORE ISSUE)
+# TOKEN EXCHANGE
 # -------------------------
 async def exchange_code_for_token(code: str, redirect_uri: str):
+    """Exchange authorization code for access token"""
+    print(f"Exchanging code with redirect_uri: {redirect_uri}")
+    
     async with httpx.AsyncClient() as client:
         response = await client.post(
             GITHUB_TOKEN_URL,
@@ -67,18 +93,27 @@ async def exchange_code_for_token(code: str, redirect_uri: str):
                 "client_id": GITHUB_CLIENT_ID,
                 "client_secret": GITHUB_CLIENT_SECRET,
                 "code": code,
-                "redirect_uri": redirect_uri,  # 🔥 REQUIRED FIX
+                "redirect_uri": redirect_uri,
             },
-            headers={"Accept": "application/json"},
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
         )
 
     data = response.json()
+    print(f"Token exchange response status: {response.status_code}")
+    print(f"Token exchange response: {data}")
 
     if response.status_code != 200 or "access_token" not in data:
         print("OAUTH ERROR:", data)
         raise HTTPException(
             status_code=400,
-            detail={"status": "error", "message": "OAuth token exchange failed", "github": data},
+            detail={
+                "status": "error",
+                "message": "OAuth token exchange failed",
+                "github": data,
+            },
         )
 
     return data
@@ -88,6 +123,9 @@ async def exchange_code_for_token(code: str, redirect_uri: str):
 # GET USER
 # -------------------------
 async def get_github_user(access_token: str):
+    """Fetch GitHub user information"""
+    print("Fetching GitHub user info...")
+    
     async with httpx.AsyncClient() as client:
         response = await client.get(
             GITHUB_USER_URL,
@@ -98,9 +136,12 @@ async def get_github_user(access_token: str):
         )
 
     if response.status_code != 200:
+        print(f"GitHub user fetch failed: {response.status_code}")
         raise HTTPException(
             status_code=400,
             detail={"status": "error", "message": "Failed to fetch GitHub user"},
         )
 
-    return response.json()
+    user_data = response.json()
+    print(f"GitHub user fetched: {user_data.get('login')}")
+    return user_data
