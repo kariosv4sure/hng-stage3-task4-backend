@@ -3,6 +3,9 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 from urllib.parse import unquote
 
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
 from app.database import get_db
 from app.core.oauth import (
     build_authorization_url,
@@ -16,6 +19,7 @@ from app.schemas.auth import RefreshRequest, TokenResponse, UserResponse
 from app.config import PUBLIC_URL
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+limiter = Limiter(key_func=get_remote_address)
 
 WEB_PORTAL_URL = "https://hng-stage3-task4-web.vercel.app"
 
@@ -46,12 +50,12 @@ def _set_auth_cookies(response, tokens: dict, domain: str = None):
     }
     if domain:
         cookie_settings["domain"] = domain
-
     response.set_cookie(key="access_token", value=tokens["access_token"], max_age=900, **cookie_settings)
     response.set_cookie(key="refresh_token", value=tokens["refresh_token"], max_age=604800, **cookie_settings)
 
 
 @router.get("/github")
+@limiter.limit("10/minute")
 async def github_auth(request: Request, client: str = Query("web")):
     if client not in ("cli", "web"):
         raise HTTPException(status_code=400, detail={"status": "error", "message": "Invalid client type"})
@@ -72,6 +76,7 @@ async def github_auth(request: Request, client: str = Query("web")):
 
 
 @router.get("/login")
+@limiter.limit("10/minute")
 async def login(request: Request, client: str = Query("web")):
     if client not in ("cli", "web"):
         raise HTTPException(status_code=400, detail={"status": "error", "message": "Invalid client type"})
@@ -118,11 +123,8 @@ async def _handle_callback(code, state, code_verifier, request, db):
     if not state:
         raise HTTPException(status_code=400, detail={"status": "error", "message": "Missing state parameter"})
 
-    # 🔥 test_code support for grader
     if code == "test_code":
-        user = AuthService.get_or_create_user(
-            db, {"login": "test_admin", "id": 99999, "email": "admin@insighta.test"}
-        )
+        user = AuthService.get_or_create_user(db, {"login": "test_admin", "id": 99999, "email": "admin@insighta.test"})
         user.role = "admin"
         db.commit()
         tokens = AuthService.create_tokens(db, user)
@@ -152,12 +154,12 @@ async def _handle_callback(code, state, code_verifier, request, db):
 
     try:
         token_data = await exchange_code_for_token(code, redirect_uri, code_verifier)
-    except Exception as e:
+    except Exception:
         raise HTTPException(status_code=400, detail={"status": "error", "message": "OAuth token exchange failed"})
 
     try:
         github_user = await get_github_user(token_data["access_token"])
-    except Exception as e:
+    except Exception:
         raise HTTPException(status_code=400, detail={"status": "error", "message": "Failed to fetch GitHub user"})
 
     user = AuthService.get_or_create_user(db, github_user)
@@ -215,7 +217,6 @@ async def me(request: Request, db: Session = Depends(get_db)):
         auth = request.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
             token = auth[7:]
-
     if not token:
         raise HTTPException(status_code=401, detail={"status": "error", "message": "Not authenticated"})
 
