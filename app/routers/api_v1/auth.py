@@ -145,10 +145,12 @@ async def _handle_callback(code, state, code_verifier, request, db):
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
 
     client_type = decoded.get("client", "web")
+    code_verifier = decoded.get("code_verifier")
 
     # Exchange code for token
     try:
-        token_data = await exchange_code_for_token(code, redirect_uri)
+        token_data = await exchange_code_for_token(code, redirect_uri, code_verifier)
+
     except Exception as e:
         print(f"Token exchange failed: {e}")
         raise HTTPException(status_code=400, detail="OAuth token exchange failed")
