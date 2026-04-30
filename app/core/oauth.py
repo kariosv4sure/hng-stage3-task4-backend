@@ -14,7 +14,7 @@ from app.core.security import generate_state
 
 
 # ─────────────────────────────
-# ENCODING HELPERS
+# BASE64 HELPERS
 # ─────────────────────────────
 def _encode(data: dict) -> str:
     return base64.urlsafe_b64encode(
@@ -29,12 +29,12 @@ def _decode(data: str) -> dict:
 
 
 # ─────────────────────────────
-# AUTH URL BUILDER (CLEAN)
+# AUTH URL
 # ─────────────────────────────
 def build_authorization_url(redirect_uri: str, client: str = "web") -> dict:
     """
-    GitHub OAuth App flow (NO PKCE).
-    Works for both CLI and Web.
+    Standard GitHub OAuth App flow (NO PKCE).
+    Works for CLI + WEB cleanly.
     """
 
     state_payload = {
@@ -59,7 +59,7 @@ def build_authorization_url(redirect_uri: str, client: str = "web") -> dict:
 
 
 # ─────────────────────────────
-# STATE DECODER (SAFE)
+# STATE
 # ─────────────────────────────
 def extract_state(state: str) -> dict | None:
     try:
@@ -71,10 +71,11 @@ def extract_state(state: str) -> dict | None:
 # ─────────────────────────────
 # TOKEN EXCHANGE (FIXED)
 # ─────────────────────────────
-async def exchange_code_for_token(code: str):
+async def exchange_code_for_token(code: str, redirect_uri: str):
     """
-    GitHub OAuth App exchange.
-    NO redirect_uri, NO PKCE.
+    IMPORTANT:
+    GitHub requires redirect_uri EXACT match.
+    This fixes your previous OAuth failure.
     """
 
     async with httpx.AsyncClient() as client:
@@ -84,23 +85,22 @@ async def exchange_code_for_token(code: str):
                 "client_id": GITHUB_CLIENT_ID,
                 "client_secret": GITHUB_CLIENT_SECRET,
                 "code": code,
+                "redirect_uri": redirect_uri,
             },
-            headers={
-                "Accept": "application/json",
-            },
+            headers={"Accept": "application/json"},
         )
 
     data = response.json()
 
     if response.status_code != 200 or "access_token" not in data:
-        # 🔥 Debug hook (super important for future issues)
-        print("OAUTH ERROR RESPONSE:", data)
+        print("🔥 OAUTH ERROR:", data)
 
         raise HTTPException(
             status_code=400,
             detail={
                 "status": "error",
-                "message": "OAuth token exchange failed"
+                "message": "OAuth token exchange failed",
+                "github_response": data,
             },
         )
 
@@ -108,7 +108,7 @@ async def exchange_code_for_token(code: str):
 
 
 # ─────────────────────────────
-# GET GITHUB USER
+# GET USER
 # ─────────────────────────────
 async def get_github_user(access_token: str):
     async with httpx.AsyncClient() as client:
@@ -120,15 +120,10 @@ async def get_github_user(access_token: str):
             },
         )
 
-    data = response.json()
-
     if response.status_code != 200:
         raise HTTPException(
             status_code=400,
-            detail={
-                "status": "error",
-                "message": "Failed to fetch GitHub user"
-            },
+            detail={"status": "error", "message": "Failed to fetch GitHub user"},
         )
 
-    return data
+    return response.json()

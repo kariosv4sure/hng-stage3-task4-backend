@@ -25,6 +25,7 @@ WEB_PORTAL_URL = "https://hng-stage3-task4-web.vercel.app"
 def _get_redirect_uri(request: Request) -> str:
     if PUBLIC_URL:
         return f"{PUBLIC_URL.rstrip('/')}/api/v1/auth/callback"
+
     return f"{str(request.base_url).rstrip('/')}/api/v1/auth/callback"
 
 
@@ -32,8 +33,22 @@ def _get_redirect_uri(request: Request) -> str:
 # COOKIES
 # ─────────────────────────────
 def _set_auth_cookies(response, tokens: dict):
-    response.set_cookie("access_token", tokens["access_token"], httponly=True, secure=True, samesite="none", max_age=900)
-    response.set_cookie("refresh_token", tokens["refresh_token"], httponly=True, secure=True, samesite="none", max_age=604800)
+    response.set_cookie(
+        "access_token",
+        tokens["access_token"],
+        httponly=True,
+        secure=True,
+        samesite="none",
+        max_age=900,
+    )
+    response.set_cookie(
+        "refresh_token",
+        tokens["refresh_token"],
+        httponly=True,
+        secure=True,
+        samesite="none",
+        max_age=604800,
+    )
 
 
 # ─────────────────────────────
@@ -66,13 +81,14 @@ async def login(request: Request, client: str = Query("web")):
 
 
 # ─────────────────────────────
-# CALLBACK (FIXED PROPERLY)
+# CALLBACK (FIXED)
 # ─────────────────────────────
 @router.get("/callback")
 async def callback(
     code: str,
     state: str,
     request: Request,
+    client: str = Query("web"),
     db: Session = Depends(get_db),
 ):
     redirect_uri = _get_redirect_uri(request)
@@ -82,15 +98,13 @@ async def callback(
     if not decoded:
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
 
-    client_type = decoded.get("client")
+    client_type = decoded.get("client", client)
 
-    # 🔥 CLI FLOW (NO REDIRECT EVER)
+    # ─────────────────────────────
+    # CLI FLOW (NO REDIRECTS)
+    # ─────────────────────────────
     if client_type == "cli":
-        token_data = await exchange_code_for_token(
-            code,
-            redirect_uri,
-            code_verifier=None
-        )
+        token_data = await exchange_code_for_token(code, redirect_uri)
 
         github_user = await get_github_user(token_data["access_token"])
 
@@ -103,14 +117,10 @@ async def callback(
             "token_type": "bearer",
         })
 
-    # 🌐 WEB FLOW
-    code_verifier = decoded.get("code_verifier")
-
-    token_data = await exchange_code_for_token(
-        code,
-        redirect_uri,
-        code_verifier
-    )
+    # ─────────────────────────────
+    # WEB FLOW
+    # ─────────────────────────────
+    token_data = await exchange_code_for_token(code, redirect_uri)
 
     github_user = await get_github_user(token_data["access_token"])
 
@@ -120,7 +130,7 @@ async def callback(
     response = RedirectResponse(url=f"{WEB_PORTAL_URL}/dashboard.html")
     _set_auth_cookies(response, tokens)
 
-    response.delete_cookie("oauth_state", httponly=True, secure=True, samesite="none")
+    response.delete_cookie("oauth_state")
     return response
 
 
@@ -171,6 +181,6 @@ async def me(request: Request, db: Session = Depends(get_db)):
 @router.post("/logout")
 async def logout():
     response = JSONResponse({"message": "Logged out"})
-    response.delete_cookie("access_token", httponly=True, secure=True, samesite="none")
-    response.delete_cookie("refresh_token", httponly=True, secure=True, samesite="none")
+    response.delete_cookie("access_token")
+    response.delete_cookie("refresh_token")
     return response
