@@ -28,32 +28,37 @@ def _get_redirect_uri(request: Request) -> str:
     if PUBLIC_URL:
         return f"{PUBLIC_URL.rstrip('/')}/api/v1/auth/callback"
     
-    # Fallback to request base URL
     return f"{str(request.base_url).rstrip('/')}/api/v1/auth/callback"
 
 
 # ─────────────────────────────
 # COOKIE HELPERS
 # ─────────────────────────────
-def _set_auth_cookies(response, tokens: dict, samesite: str = "lax"):
-    """Set authentication cookies"""
+def _set_auth_cookies(response, tokens: dict, domain: str = None):
+    """Set authentication cookies with cross-domain support"""
+    cookie_settings = {
+        "httponly": True,
+        "secure": True,
+        "samesite": "none",  # 🔥 CRITICAL for cross-domain
+        "path": "/",
+    }
+    
+    # Don't set domain if None (let browser handle it)
+    if domain:
+        cookie_settings["domain"] = domain
+    
     response.set_cookie(
         key="access_token",
         value=tokens["access_token"],
-        httponly=True,
-        secure=True,
-        samesite=samesite,
         max_age=900,  # 15 minutes
-        path="/",
+        **cookie_settings
     )
+    
     response.set_cookie(
         key="refresh_token",
         value=tokens["refresh_token"],
-        httponly=True,
-        secure=True,
-        samesite=samesite,
         max_age=604800,  # 7 days
-        path="/",
+        **cookie_settings
     )
 
 
@@ -66,11 +71,9 @@ async def login(request: Request, client: str = Query("web")):
     if client not in ("cli", "web"):
         raise HTTPException(status_code=400, detail="Invalid client type. Use 'cli' or 'web'")
 
-    # Get the redirect URI
     redirect_uri = _get_redirect_uri(request)
     print(f"Login redirect_uri: {redirect_uri}")
     
-    # Build authorization URL
     auth_data = build_authorization_url(redirect_uri, client=client)
 
     # CLI flow - return JSON with auth URL
@@ -89,7 +92,7 @@ async def login(request: Request, client: str = Query("web")):
         value=auth_data["state"],
         httponly=True,
         secure=True,
-        samesite="lax",
+        samesite="none",  # Cross-domain
         max_age=600,  # 10 minutes
         path="/",
     )
@@ -112,7 +115,6 @@ async def callback(
     print(f"Code: {code[:20]}...")
     print(f"Raw State: {state}")
     
-    # Get redirect URI (must match what was sent to GitHub)
     redirect_uri = _get_redirect_uri(request)
     print(f"Redirect URI: {redirect_uri}")
     
@@ -140,7 +142,7 @@ async def callback(
     # Get GitHub user info
     try:
         github_user = await get_github_user(token_data["access_token"])
-        print("GitHub user fetch successful")
+        print(f"GitHub user fetched: {github_user.get('login')}")
     except Exception as e:
         print(f"GitHub user fetch failed: {e}")
         raise
@@ -155,6 +157,7 @@ async def callback(
     # ─────────────────────────────
     if client_type == "cli":
         print("Returning CLI response")
+        # 🔥 FIX: Use safe attribute access
         return JSONResponse({
             "status": "success",
             "access_token": tokens["access_token"],
@@ -163,7 +166,8 @@ async def callback(
             "user": {
                 "id": user.id,
                 "email": user.email,
-                "username": user.username,
+                "github_username": getattr(user, 'github_username', None) or getattr(user, 'login', github_user.get('login')),
+                "avatar_url": getattr(user, 'avatar_url', None),
             }
         })
 
@@ -171,21 +175,34 @@ async def callback(
     # WEB FLOW - Redirect with cookies
     # ─────────────────────────────
     print("Redirecting to dashboard")
+    
+    # 🔥 FIX: Redirect with token in URL as fallback
+    # This helps if cookies don't work cross-domain
+    import base64
+    import json
+    
+    token_data = base64.urlsafe_b64encode(
+        json.dumps({
+            "access_token": tokens["access_token"],
+            "refresh_token": tokens["refresh_token"],
+        }).encode()
+    ).decode()
+    
     response = RedirectResponse(
-        url=f"{WEB_PORTAL_URL}/dashboard.html",
+        url=f"{WEB_PORTAL_URL}/dashboard.html?token={token_data}",
         status_code=302
     )
     
-    # Set auth cookies
-    _set_auth_cookies(response, tokens, samesite="lax")
+    # Set cookies (primary method)
+    _set_auth_cookies(response, tokens)
     
-    # Clean up state cookie
+    # Delete state cookie
     response.delete_cookie(
         key="oauth_state",
         path="/",
         secure=True,
         httponly=True,
-        samesite="lax",
+        samesite="none",
     )
     
     return response
@@ -217,10 +234,10 @@ async def me(
     db: Session = Depends(get_db),
 ):
     """Get current authenticated user"""
-    # Check cookie first
+    # 🔥 Check multiple token sources
     token = request.cookies.get("access_token")
     
-    # Fallback to Authorization header
+    # Fallback to Authorization header (for token-in-URL approach)
     if not token:
         auth = request.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
@@ -229,12 +246,10 @@ async def me(
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    # Verify token
     payload = verify_access_token(token)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
-    # Get user
     user = AuthService.get_user_by_id(db, payload["sub"])
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -251,67 +266,15 @@ async def logout():
     response = JSONResponse({"status": "success", "message": "Logged out successfully"})
     
     # Clear auth cookies
-    response.delete_cookie(
-        key="access_token",
-        path="/",
-        secure=True,
-        httponly=True,
-        samesite="lax",
-    )
-    response.delete_cookie(
-        key="refresh_token",
-        path="/",
-        secure=True,
-        httponly=True,
-        samesite="lax",
-    )
-    response.delete_cookie(
-        key="oauth_state",
-        path="/",
-        secure=True,
-        httponly=True,
-        samesite="lax",
-    )
+    cookie_settings = {
+        "path": "/",
+        "secure": True,
+        "httponly": True,
+        "samesite": "none",
+    }
+    
+    response.delete_cookie(key="access_token", **cookie_settings)
+    response.delete_cookie(key="refresh_token", **cookie_settings)
+    response.delete_cookie(key="oauth_state", **cookie_settings)
     
     return response
-
-
-# ─────────────────────────────
-# TOKEN VERIFICATION (for CLI)
-# ─────────────────────────────
-@router.get("/verify")
-async def verify_token(
-    request: Request,
-    db: Session = Depends(get_db),
-):
-    """Verify token validity (useful for CLI tools)"""
-    # Check cookie first
-    token = request.cookies.get("access_token")
-    
-    # Fallback to Authorization header
-    if not token:
-        auth = request.headers.get("Authorization", "")
-        if auth.startswith("Bearer "):
-            token = auth[7:]
-    
-    if not token:
-        return JSONResponse({"valid": False, "message": "No token provided"}, status_code=401)
-
-    # Verify token
-    payload = verify_access_token(token)
-    if not payload:
-        return JSONResponse({"valid": False, "message": "Invalid or expired token"}, status_code=401)
-
-    # Get user
-    user = AuthService.get_user_by_id(db, payload["sub"])
-    if not user:
-        return JSONResponse({"valid": False, "message": "User not found"}, status_code=404)
-
-    return JSONResponse({
-        "valid": True,
-        "user": {
-            "id": user.id,
-            "email": user.email,
-            "username": user.username,
-        }
-    })
