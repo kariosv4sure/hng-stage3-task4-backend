@@ -20,9 +20,6 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 WEB_PORTAL_URL = "https://hng-stage3-task4-web.vercel.app"
 
 
-# ─────────────────────────────
-# CORS HELPER
-# ─────────────────────────────
 def _add_cors(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Credentials"] = "true"
@@ -30,23 +27,16 @@ def _add_cors(response):
 
 
 def _add_cors_redirect(response):
-    """Add CORS headers to redirect responses"""
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Credentials"] = "true"
     response.headers["Access-Control-Expose-Headers"] = "*"
     return response
 
 
-# ─────────────────────────────
-# REDIRECT URI HELPER
-# ─────────────────────────────
 def _get_redirect_uri(request: Request = None) -> str:
     return "https://hng-stage3-task4-backend-production.up.railway.app/api/v1/auth/callback"
 
 
-# ─────────────────────────────
-# COOKIE HELPERS
-# ─────────────────────────────
 def _set_auth_cookies(response, tokens: dict, domain: str = None):
     cookie_settings = {
         "httponly": True,
@@ -61,12 +51,8 @@ def _set_auth_cookies(response, tokens: dict, domain: str = None):
     response.set_cookie(key="refresh_token", value=tokens["refresh_token"], max_age=604800, **cookie_settings)
 
 
-# ─────────────────────────────
-# GITHUB AUTH INIT (Grader expects /auth/github)
-# ─────────────────────────────
 @router.get("/github")
 async def github_auth(request: Request, client: str = Query("web")):
-    """Initiate GitHub OAuth - grader expects this path"""
     if client not in ("cli", "web"):
         raise HTTPException(status_code=400, detail="Invalid client type")
 
@@ -85,12 +71,8 @@ async def github_auth(request: Request, client: str = Query("web")):
     return response
 
 
-# ─────────────────────────────
-# LOGIN ENDPOINT
-# ─────────────────────────────
 @router.get("/login")
 async def login(request: Request, client: str = Query("web")):
-    """Initialize OAuth login flow"""
     if client not in ("cli", "web"):
         raise HTTPException(status_code=400, detail="Invalid client type")
 
@@ -109,9 +91,6 @@ async def login(request: Request, client: str = Query("web")):
     return response
 
 
-# ─────────────────────────────
-# CALLBACK ENDPOINT
-# ─────────────────────────────
 @router.get("/github/callback")
 async def github_callback(
     code: str = Query(None),
@@ -120,7 +99,6 @@ async def github_callback(
     request: Request = None,
     db: Session = Depends(get_db),
 ):
-    """GitHub OAuth callback - grader expects /auth/github/callback"""
     return await _handle_callback(code, state, code_verifier, request, db)
 
 
@@ -131,23 +109,16 @@ async def callback(
     request: Request = None,
     db: Session = Depends(get_db),
 ):
-    """Handle OAuth callback from GitHub"""
     return await _handle_callback(code, state, None, request, db)
 
 
 async def _handle_callback(code, state, code_verifier, request, db):
-    """Shared callback logic"""
     if not code:
         raise HTTPException(status_code=400, detail="Missing authorization code")
     if not state:
         raise HTTPException(status_code=400, detail="Missing state parameter")
 
-    print(f"=== CALLBACK RECEIVED ===")
-    print(f"Code: {code[:20]}...")
-    print(f"State: {state}")
-
     redirect_uri = _get_redirect_uri(request)
-
     decoded_state_param = unquote(state)
     decoded = extract_state(decoded_state_param)
     if not decoded:
@@ -159,18 +130,15 @@ async def _handle_callback(code, state, code_verifier, request, db):
     try:
         token_data = await exchange_code_for_token(code, redirect_uri, code_verifier)
     except Exception as e:
-        print(f"Token exchange failed: {e}")
         raise HTTPException(status_code=400, detail="OAuth token exchange failed")
 
     try:
         github_user = await get_github_user(token_data["access_token"])
     except Exception as e:
-        print(f"GitHub user fetch failed: {e}")
         raise HTTPException(status_code=400, detail="Failed to fetch GitHub user")
 
     user = AuthService.get_or_create_user(db, github_user)
     tokens = AuthService.create_tokens(db, user)
-    print(f"User authenticated: {user.email}")
 
     if client_type == "cli":
         return _add_cors(JSONResponse({
@@ -180,15 +148,15 @@ async def _handle_callback(code, state, code_verifier, request, db):
             "token_type": "bearer",
             "user": {
                 "id": str(user.id),
-                "email": user.email,
-                "github_username": getattr(user, 'github_username', None) or github_user.get('login'),
+                "email": user.email or "",
+                "github_id": str(getattr(user, 'github_id', '')),
+                "github_username": getattr(user, 'github_username', None) or github_user.get('login', ''),
+                "username": getattr(user, 'github_username', None) or github_user.get('login', ''),
                 "role": getattr(user, 'role', 'admin'),
             }
         }))
 
-    import base64
-    import json
-
+    import base64, json
     token_param = base64.urlsafe_b64encode(
         json.dumps({"access_token": tokens["access_token"], "refresh_token": tokens["refresh_token"]}).encode()
     ).decode()
@@ -200,28 +168,25 @@ async def _handle_callback(code, state, code_verifier, request, db):
     return response
 
 
-# ─────────────────────────────
-# REFRESH TOKEN
-# ─────────────────────────────
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh_token(request: RefreshRequest, db: Session = Depends(get_db)):
-    """Refresh access token"""
     if not request.refresh_token:
         raise HTTPException(status_code=400, detail="Missing refresh token")
 
     tokens = AuthService.refresh_access_token(db, request.refresh_token)
     if not tokens:
-        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+        raise HTTPException(status_code=401, detail={"status": "error", "message": "Invalid or expired refresh token"})
 
-    return _add_cors(JSONResponse(tokens))
+    return _add_cors(JSONResponse({
+        "status": "success",
+        "access_token": tokens["access_token"],
+        "refresh_token": tokens["refresh_token"],
+        "token_type": "bearer",
+    }))
 
 
-# ─────────────────────────────
-# GET CURRENT USER
-# ─────────────────────────────
 @router.get("/me", response_model=UserResponse)
 async def me(request: Request, db: Session = Depends(get_db)):
-    """Get current authenticated user"""
     token = request.cookies.get("access_token")
     if not token:
         auth = request.headers.get("Authorization", "")
@@ -241,21 +206,25 @@ async def me(request: Request, db: Session = Depends(get_db)):
 
     return _add_cors(JSONResponse({
         "id": str(user.id),
-        "email": user.email,
-        "github_username": getattr(user, 'github_username', None),
-        "role": getattr(user, 'role', 'admin'),
+        "email": user.email or "",
+        "github_id": str(getattr(user, 'github_id', '')),
+        "github_username": getattr(user, 'github_username', None) or "",
+        "username": getattr(user, 'github_username', None) or "",
+        "role": getattr(user, 'role', 'admin') or "admin",
     }))
 
 
-# ─────────────────────────────
-# LOGOUT
-# ─────────────────────────────
 @router.post("/logout")
 async def logout():
-    """Logout and clear cookies"""
     response = JSONResponse({"status": "success", "message": "Logged out successfully"})
     cookie_settings = {"path": "/", "secure": True, "httponly": True, "samesite": "none"}
     response.delete_cookie(key="access_token", **cookie_settings)
     response.delete_cookie(key="refresh_token", **cookie_settings)
     response.delete_cookie(key="oauth_state", **cookie_settings)
     return _add_cors(response)
+
+
+@router.get("/logout")
+async def logout_get():
+    raise HTTPException(status_code=405, detail={"status": "error", "message": "Method not allowed. Use POST."})
+
