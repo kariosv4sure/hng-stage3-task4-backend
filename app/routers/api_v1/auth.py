@@ -32,11 +32,8 @@ def _add_cors(response):
 # ─────────────────────────────
 # REDIRECT URI HELPER
 # ─────────────────────────────
-def _get_redirect_uri(request: Request) -> str:
-    if PUBLIC_URL:
-        return f"{PUBLIC_URL.rstrip('/')}/api/v1/auth/callback"
-    return f"{str(request.base_url).rstrip('/')}/api/v1/auth/callback"
-
+def _get_redirect_uri(request: Request = None) -> str:
+    return "https://hng-stage3-task4-backend-production.up.railway.app/api/v1/auth/callback"
 
 # ─────────────────────────────
 # COOKIE HELPERS
