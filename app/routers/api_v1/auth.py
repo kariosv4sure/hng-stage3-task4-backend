@@ -29,11 +29,20 @@ def _add_cors(response):
     return response
 
 
+def _add_cors_redirect(response):
+    """Add CORS headers to redirect responses"""
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["Access-Control-Expose-Headers"] = "*"
+    return response
+
+
 # ─────────────────────────────
 # REDIRECT URI HELPER
 # ─────────────────────────────
 def _get_redirect_uri(request: Request = None) -> str:
     return "https://hng-stage3-task4-backend-production.up.railway.app/api/v1/auth/callback"
+
 
 # ─────────────────────────────
 # COOKIE HELPERS
@@ -60,7 +69,7 @@ async def github_auth(request: Request, client: str = Query("web")):
     """Initiate GitHub OAuth - grader expects this path"""
     if client not in ("cli", "web"):
         raise HTTPException(status_code=400, detail="Invalid client type")
-    
+
     redirect_uri = _get_redirect_uri(request)
     auth_data = build_authorization_url(redirect_uri, client=client)
 
@@ -71,8 +80,9 @@ async def github_auth(request: Request, client: str = Query("web")):
         }))
 
     response = RedirectResponse(url=auth_data["auth_url"], status_code=302)
+    response = _add_cors_redirect(response)
     response.set_cookie(key="oauth_state", value=auth_data["state"], httponly=True, secure=True, samesite="none", max_age=600, path="/")
-    return _add_cors(response)
+    return response
 
 
 # ─────────────────────────────
@@ -94,8 +104,9 @@ async def login(request: Request, client: str = Query("web")):
         }))
 
     response = RedirectResponse(url=auth_data["auth_url"], status_code=302)
+    response = _add_cors_redirect(response)
     response.set_cookie(key="oauth_state", value=auth_data["state"], httponly=True, secure=True, samesite="none", max_age=600, path="/")
-    return _add_cors(response)
+    return response
 
 
 # ─────────────────────────────
@@ -126,7 +137,6 @@ async def callback(
 
 async def _handle_callback(code, state, code_verifier, request, db):
     """Shared callback logic"""
-    # Validate required params
     if not code:
         raise HTTPException(status_code=400, detail="Missing authorization code")
     if not state:
@@ -138,7 +148,6 @@ async def _handle_callback(code, state, code_verifier, request, db):
 
     redirect_uri = _get_redirect_uri(request)
 
-    # URL decode state
     decoded_state_param = unquote(state)
     decoded = extract_state(decoded_state_param)
     if not decoded:
@@ -147,27 +156,22 @@ async def _handle_callback(code, state, code_verifier, request, db):
     client_type = decoded.get("client", "web")
     code_verifier = decoded.get("code_verifier")
 
-    # Exchange code for token
     try:
         token_data = await exchange_code_for_token(code, redirect_uri, code_verifier)
-
     except Exception as e:
         print(f"Token exchange failed: {e}")
         raise HTTPException(status_code=400, detail="OAuth token exchange failed")
 
-    # Get GitHub user
     try:
         github_user = await get_github_user(token_data["access_token"])
     except Exception as e:
         print(f"GitHub user fetch failed: {e}")
         raise HTTPException(status_code=400, detail="Failed to fetch GitHub user")
 
-    # Create/get user and generate tokens
     user = AuthService.get_or_create_user(db, github_user)
     tokens = AuthService.create_tokens(db, user)
     print(f"User authenticated: {user.email}")
 
-    # CLI FLOW
     if client_type == "cli":
         return _add_cors(JSONResponse({
             "status": "success",
@@ -182,7 +186,6 @@ async def _handle_callback(code, state, code_verifier, request, db):
             }
         }))
 
-    # WEB FLOW
     import base64
     import json
 
@@ -191,9 +194,10 @@ async def _handle_callback(code, state, code_verifier, request, db):
     ).decode()
 
     response = RedirectResponse(url=f"{WEB_PORTAL_URL}/dashboard.html?token={token_param}", status_code=302)
+    response = _add_cors_redirect(response)
     _set_auth_cookies(response, tokens)
     response.delete_cookie(key="oauth_state", path="/", secure=True, httponly=True, samesite="none")
-    return _add_cors(response)
+    return response
 
 
 # ─────────────────────────────
@@ -204,7 +208,7 @@ async def refresh_token(request: RefreshRequest, db: Session = Depends(get_db)):
     """Refresh access token"""
     if not request.refresh_token:
         raise HTTPException(status_code=400, detail="Missing refresh token")
-    
+
     tokens = AuthService.refresh_access_token(db, request.refresh_token)
     if not tokens:
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
