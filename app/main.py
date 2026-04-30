@@ -16,17 +16,10 @@ from app.seed import seed_profiles
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize DB
     init_db()
-
-    # Seed Stage 2 data into Stage 3 DB
     seed_profiles()
-
-    # HTTP client
     app.state.http_client = httpx.AsyncClient(timeout=10.0)
-
     yield
-
     await app.state.http_client.aclose()
     engine.dispose()
 
@@ -38,67 +31,46 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS (frontend access)
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://hng-stage3-task4-web.vercel.app"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Logging middleware
+# Middleware
 app.middleware("http")(request_logging_middleware)
-
-# Rate limiter
 app.state.limiter = limiter
 
 
-# ----------------------------
 # Exception Handlers
-# ----------------------------
-
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request: Request, exc: RequestValidationError):
-    return JSONResponse(
-        status_code=400,
-        content={"status": "error", "message": "Invalid request parameters"},
-    )
-
+    return JSONResponse(status_code=400, content={"status": "error", "message": "Invalid request parameters"})
 
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
-    return JSONResponse(
-        status_code=429,
-        content={"status": "error", "message": "Rate limit exceeded"},
-    )
-
+    return JSONResponse(status_code=429, content={"status": "error", "message": "Rate limit exceeded"})
 
 @app.exception_handler(Exception)
 async def global_error_handler(request: Request, exc: Exception):
-    return JSONResponse(
-        status_code=500,
-        content={"status": "error", "message": "Internal server error"},
-    )
+    return JSONResponse(status_code=500, content={"status": "error", "message": "Internal server error"})
 
 
-# ----------------------------
 # Routes
-# ----------------------------
-
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(profiles.router, prefix="/api/v1")
 app.include_router(export.router, prefix="/api/v1")
 
+# Also include auth router WITHOUT prefix for /auth/github etc.
+app.include_router(auth.router)
+
 
 @app.get("/")
 async def root():
-    return {
-        "app": "Insighta Labs+",
-        "version": "3.0.0",
-        "status": "running"
-    }
-
+    return {"app": "Insighta Labs+", "version": "3.0.0", "status": "running"}
 
 @app.get("/health")
 async def health():

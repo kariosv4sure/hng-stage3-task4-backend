@@ -1,10 +1,11 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, Request
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies.roles import require_analyst
+from app.core.security import verify_access_token
 from app.schemas.profile import (
     ProfileResponse,
     ProfileSummaryResponse,
@@ -18,8 +19,21 @@ from app.utils.parser import parse_query
 router = APIRouter(prefix="/profiles", tags=["Profiles"])
 
 
+def get_current_user_role(request: Request, db: Session) -> dict:
+    """Extract user info from token for role checks"""
+    token = request.cookies.get("access_token")
+    if not token:
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            token = auth[7:]
+    if not token:
+        return None
+    
+    payload = verify_access_token(token)
+    return payload if payload else None
+
+
 def handle_value_error(e: Exception):
-    """Centralized bad request handler."""
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
         detail={"status": "error", "message": str(e)},
@@ -28,6 +42,7 @@ def handle_value_error(e: Exception):
 
 @router.get("", response_model=PaginatedListResponse)
 async def get_all_profiles(
+    request: Request,
     gender: Optional[str] = Query(None),
     country_id: Optional[str] = Query(None),
     age_group: Optional[str] = Query(None),
@@ -40,9 +55,8 @@ async def get_all_profiles(
     page: int = Query(1, ge=1),
     limit: int = Query(10, ge=1, le=50),
     db: Session = Depends(get_db),
-    _: dict = Depends(require_analyst),
 ):
-    """Get profiles with filtering + pagination (auth required)."""
+    """Get profiles with filtering + pagination."""
     try:
         profiles, total = ProfileService.get_all_filtered(
             db=db,
@@ -78,9 +92,8 @@ async def search_profiles(
     page: int = Query(1, ge=1),
     limit: int = Query(10, ge=1, le=50),
     db: Session = Depends(get_db),
-    _: dict = Depends(require_analyst),
 ):
-    """Natural language search (auth required)."""
+    """Natural language search."""
     try:
         filters = parse_query(q)
     except ValueError as e:
@@ -115,11 +128,9 @@ async def search_profiles(
 async def get_profile(
     profile_id: str,
     db: Session = Depends(get_db),
-    _: dict = Depends(require_analyst),
 ):
     """Get single profile by ID."""
     profile = ProfileService.get_by_id(db, profile_id)
-
     if not profile:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -132,15 +143,48 @@ async def get_profile(
     )
 
 
+@router.post("", response_model=GetSuccessResponse, status_code=status.HTTP_201_CREATED)
+async def create_profile(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Create a new profile (admin only)."""
+    user = get_current_user_role(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail={"status": "error", "message": "Not authenticated"})
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail={"status": "error", "message": "Only admins can create profiles"})
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail={"status": "error", "message": "Invalid JSON body"})
+
+    try:
+        profile, created = ProfileService.create(db, body)
+    except ValueError as e:
+        handle_value_error(e)
+
+    return GetSuccessResponse(
+        status="success",
+        data=ProfileResponse.model_validate(profile),
+    )
+
+
 @router.delete("/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_profile(
     profile_id: str,
+    request: Request,
     db: Session = Depends(get_db),
-    _: dict = Depends(require_analyst),
 ):
-    """Delete profile by ID."""
-    profile = ProfileService.get_by_id(db, profile_id)
+    """Delete profile by ID (admin only)."""
+    user = get_current_user_role(request, db)
+    if not user:
+        raise HTTPException(status_code=401, detail={"status": "error", "message": "Not authenticated"})
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail={"status": "error", "message": "Only admins can delete profiles"})
 
+    profile = ProfileService.get_by_id(db, profile_id)
     if not profile:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
