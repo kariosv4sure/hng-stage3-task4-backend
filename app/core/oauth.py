@@ -50,7 +50,6 @@ def generate_code_challenge(verifier: str) -> str:
 # -------------------------
 def build_authorization_url(redirect_uri: str, client: str = "web") -> dict:
     code_verifier = generate_code_verifier()
-    code_challenge = generate_code_challenge(code_verifier)
 
     state_payload = {
         "state": generate_state(),
@@ -60,14 +59,13 @@ def build_authorization_url(redirect_uri: str, client: str = "web") -> dict:
 
     encoded_state = _encode(state_payload)
 
+    # 🔥 Do NOT send code_challenge to GitHub OAuth Apps
     auth_url = (
         f"{GITHUB_AUTH_URL}"
         f"?client_id={GITHUB_CLIENT_ID}"
         f"&redirect_uri={redirect_uri}"
         f"&scope=read:user user:email"
         f"&state={encoded_state}"
-        f"&code_challenge={code_challenge}"
-        f"&code_challenge_method=S256"
     )
 
     return {
