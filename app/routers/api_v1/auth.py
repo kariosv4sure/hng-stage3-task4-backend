@@ -101,6 +101,73 @@ async def callback(
     client_type = decoded.get("client", client)
 
     # ─────────────────────────────
+    # GET GITHUB TOKEN
+    # ─────────────────────────────
+    token_data = await exchange_code_for_token(code, redirect_uri)
+    github_user = await get_github_user(token_data["access_token"])
+
+    user = AuthService.get_or_create_user(db, github_user)
+    tokens = AuthService.create_tokens(db, user)
+
+    # ─────────────────────────────
+    # CLI FLOW
+    # ─────────────────────────────
+    if client_type == "cli":
+        return JSONResponse({
+            "access_token": tokens["access_token"],
+            "refresh_token": tokens["refresh_token"],
+            "token_type": "bearer",
+        })
+
+    # ─────────────────────────────
+    # WEB FLOW
+    # ─────────────────────────────
+    response = RedirectResponse(
+        url=f"{WEB_PORTAL_URL}/dashboard.html"
+    )
+
+    response.set_cookie(
+        "access_token",
+        tokens["access_token"],
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=900,
+    )
+
+    response.set_cookie(
+        "refresh_token",
+        tokens["refresh_token"],
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=604800,
+    )
+
+    response.delete_cookie("oauth_state")
+
+    return response
+
+"""
+
+@router.get("/callback")
+async def callback(
+    code: str,
+    state: str,
+    request: Request,
+    client: str = Query("web"),
+    db: Session = Depends(get_db),
+):
+    redirect_uri = _get_redirect_uri(request)
+
+    decoded = extract_state(state)
+
+    if not decoded:
+        raise HTTPException(status_code=400, detail="Invalid OAuth state")
+
+    client_type = decoded.get("client", client)
+
+    # ─────────────────────────────
     # CLI FLOW (NO REDIRECTS)
     # ─────────────────────────────
     if client_type == "cli":
@@ -133,7 +200,7 @@ async def callback(
     response.delete_cookie("oauth_state")
     return response
 
-
+"""
 # ─────────────────────────────
 # REFRESH
 # ─────────────────────────────

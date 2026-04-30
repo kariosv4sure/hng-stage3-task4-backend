@@ -13,30 +13,21 @@ from app.config import (
 from app.core.security import generate_state
 
 
-# ─────────────────────────────
-# BASE64 HELPERS
-# ─────────────────────────────
+# -------------------------
+# ENCODING HELPERS
+# -------------------------
 def _encode(data: dict) -> str:
-    return base64.urlsafe_b64encode(
-        json.dumps(data).encode()
-    ).decode()
+    return base64.urlsafe_b64encode(json.dumps(data).encode()).decode()
 
 
 def _decode(data: str) -> dict:
-    return json.loads(
-        base64.urlsafe_b64decode(data.encode()).decode()
-    )
+    return json.loads(base64.urlsafe_b64decode(data.encode()).decode())
 
 
-# ─────────────────────────────
-# AUTH URL
-# ─────────────────────────────
+# -------------------------
+# BUILD AUTH URL
+# -------------------------
 def build_authorization_url(redirect_uri: str, client: str = "web") -> dict:
-    """
-    Standard GitHub OAuth App flow (NO PKCE).
-    Works for CLI + WEB cleanly.
-    """
-
     state_payload = {
         "state": generate_state(),
         "client": client,
@@ -45,22 +36,19 @@ def build_authorization_url(redirect_uri: str, client: str = "web") -> dict:
     encoded_state = _encode(state_payload)
 
     auth_url = (
-        f"{GITHUB_AUTH_URL}?"
-        f"client_id={GITHUB_CLIENT_ID}&"
-        f"redirect_uri={redirect_uri}&"
-        f"scope=read:user user:email&"
-        f"state={encoded_state}"
+        f"{GITHUB_AUTH_URL}"
+        f"?client_id={GITHUB_CLIENT_ID}"
+        f"&redirect_uri={redirect_uri}"
+        f"&scope=read:user user:email"
+        f"&state={encoded_state}"
     )
 
-    return {
-        "auth_url": auth_url,
-        "state": encoded_state,
-    }
+    return {"auth_url": auth_url, "state": encoded_state}
 
 
-# ─────────────────────────────
-# STATE
-# ─────────────────────────────
+# -------------------------
+# STATE PARSE
+# -------------------------
 def extract_state(state: str) -> dict | None:
     try:
         return _decode(state)
@@ -68,16 +56,10 @@ def extract_state(state: str) -> dict | None:
         return None
 
 
-# ─────────────────────────────
-# TOKEN EXCHANGE (FIXED)
-# ─────────────────────────────
+# -------------------------
+# TOKEN EXCHANGE (FIXED CORE ISSUE)
+# -------------------------
 async def exchange_code_for_token(code: str, redirect_uri: str):
-    """
-    IMPORTANT:
-    GitHub requires redirect_uri EXACT match.
-    This fixes your previous OAuth failure.
-    """
-
     async with httpx.AsyncClient() as client:
         response = await client.post(
             GITHUB_TOKEN_URL,
@@ -85,7 +67,7 @@ async def exchange_code_for_token(code: str, redirect_uri: str):
                 "client_id": GITHUB_CLIENT_ID,
                 "client_secret": GITHUB_CLIENT_SECRET,
                 "code": code,
-                "redirect_uri": redirect_uri,
+                "redirect_uri": redirect_uri,  # 🔥 REQUIRED FIX
             },
             headers={"Accept": "application/json"},
         )
@@ -93,23 +75,18 @@ async def exchange_code_for_token(code: str, redirect_uri: str):
     data = response.json()
 
     if response.status_code != 200 or "access_token" not in data:
-        print("🔥 OAUTH ERROR:", data)
-
+        print("OAUTH ERROR:", data)
         raise HTTPException(
             status_code=400,
-            detail={
-                "status": "error",
-                "message": "OAuth token exchange failed",
-                "github_response": data,
-            },
+            detail={"status": "error", "message": "OAuth token exchange failed", "github": data},
         )
 
     return data
 
 
-# ─────────────────────────────
+# -------------------------
 # GET USER
-# ─────────────────────────────
+# -------------------------
 async def get_github_user(access_token: str):
     async with httpx.AsyncClient() as client:
         response = await client.get(
