@@ -3,9 +3,6 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 from urllib.parse import unquote
 
-from slowapi import Limiter
-from slowapi.util import get_remote_address
-
 from app.database import get_db
 from app.core.oauth import (
     build_authorization_url,
@@ -17,9 +14,9 @@ from app.core.security import verify_access_token
 from app.services.auth_service import AuthService
 from app.schemas.auth import RefreshRequest, TokenResponse, UserResponse
 from app.config import PUBLIC_URL
+from app.middleware.rate_limit import limiter
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
-limiter = Limiter(key_func=get_remote_address)
 
 WEB_PORTAL_URL = "https://hng-stage3-task4-web.vercel.app"
 
