@@ -177,7 +177,7 @@ async def api_export_profiles():
     from app.database import SessionLocal
     db = SessionLocal()
     try:
-        csv_data = ExportService.export_csv(db)
+        csv_data = ExportService.export_profiles_csv(db)
         return Response(content=csv_data, media_type="text/csv")
     finally:
         db.close()
