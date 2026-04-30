@@ -12,70 +12,63 @@ from app.core.oauth import (
 from app.core.security import verify_access_token
 from app.services.auth_service import AuthService
 from app.schemas.auth import RefreshRequest, TokenResponse, UserResponse
+from app.config import PUBLIC_URL
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 WEB_PORTAL_URL = "https://hng-stage3-task4-web.vercel.app"
 
 
+# ─────────────────────────────
+# REDIRECT URI
+# ─────────────────────────────
 def _get_redirect_uri(request: Request) -> str:
-    from app.config import PUBLIC_URL
-
     if PUBLIC_URL:
         return f"{PUBLIC_URL.rstrip('/')}/api/v1/auth/callback"
 
     return f"{str(request.base_url).rstrip('/')}/api/v1/auth/callback"
 
 
-# ✅ FIXED COOKIES (CROSS-SITE SAFE)
+# ─────────────────────────────
+# COOKIES
+# ─────────────────────────────
 def _set_auth_cookies(response, tokens: dict):
-    response.set_cookie(
-        key="access_token",
-        value=tokens["access_token"],
-        httponly=True,
-        secure=True,
-        samesite="none",
-        max_age=900,
-    )
-    response.set_cookie(
-        key="refresh_token",
-        value=tokens["refresh_token"],
-        httponly=True,
-        secure=True,
-        samesite="none",
-        max_age=604800,
-    )
+    response.set_cookie("access_token", tokens["access_token"], httponly=True, secure=True, samesite="none", max_age=900)
+    response.set_cookie("refresh_token", tokens["refresh_token"], httponly=True, secure=True, samesite="none", max_age=604800)
 
 
+# ─────────────────────────────
+# LOGIN
+# ─────────────────────────────
 @router.get("/login")
 async def login(request: Request, client: str = Query("web")):
     if client not in ("cli", "web"):
         raise HTTPException(status_code=400, detail="Invalid client")
 
     redirect_uri = _get_redirect_uri(request)
-    auth_data = build_authorization_url(redirect_uri)
+    auth_data = build_authorization_url(redirect_uri, client=client)
 
     if client == "cli":
-        return JSONResponse(
-            content={
-                "auth_url": auth_data["auth_url"],
-                "state": auth_data["state"],
-            }
-        )
+        return JSONResponse({
+            "auth_url": auth_data["auth_url"],
+            "state": auth_data["state"],
+        })
 
     response = RedirectResponse(url=auth_data["auth_url"])
     response.set_cookie(
-        key="oauth_state",
-        value=auth_data["state"],
+        "oauth_state",
+        auth_data["state"],
         httponly=True,
         secure=True,
         samesite="none",
         max_age=600,
     )
-
     return response
 
 
+# ─────────────────────────────
+# CALLBACK
+# ─────────────────────────────
 @router.get("/callback")
 async def callback(
     code: str,
@@ -84,18 +77,19 @@ async def callback(
     client: str = Query("web"),
     db: Session = Depends(get_db),
 ):
-    # 🔥 FORCE FIX: CLI must ALWAYS use stable redirect URI
-    if client == "cli":
-        redirect_uri = "https://hng-stage3-task4-backend-production.up.railway.app/api/v1/auth/callback"
-    else:
-        redirect_uri = _get_redirect_uri(request)
+    redirect_uri = _get_redirect_uri(request)
 
     decoded = extract_state(state)
 
-    if not decoded or "code_verifier" not in decoded:
+    # HARD FIX: safe failure instead of crash loop
+    if not decoded:
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
 
-    code_verifier = decoded["code_verifier"]
+    code_verifier = decoded.get("code_verifier")
+
+    # CLI = NO PKCE
+    if client == "cli":
+        code_verifier = None
 
     token_data = await exchange_code_for_token(code, redirect_uri, code_verifier)
     github_user = await get_github_user(token_data["access_token"])
@@ -103,27 +97,23 @@ async def callback(
     user = AuthService.get_or_create_user(db, github_user)
     tokens = AuthService.create_tokens(db, user)
 
-    # 🔥 CLI FLOW (NO REDIRECTS EVER)
     if client == "cli":
-        return JSONResponse(content={
+        return JSONResponse({
             "access_token": tokens["access_token"],
             "refresh_token": tokens["refresh_token"],
-            "token_type": "bearer"
+            "token_type": "bearer",
         })
 
-    # 🌐 WEB FLOW ONLY
     response = RedirectResponse(url=f"{WEB_PORTAL_URL}/dashboard.html")
     _set_auth_cookies(response, tokens)
 
-    response.delete_cookie(
-        "oauth_state",
-        secure=True,
-        samesite="none",
-    )
-
+    response.delete_cookie("oauth_state")
     return response
 
 
+# ─────────────────────────────
+# REFRESH
+# ─────────────────────────────
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh_token(request: RefreshRequest, db: Session = Depends(get_db)):
     tokens = AuthService.refresh_access_token(db, request.refresh_token)
@@ -134,14 +124,17 @@ async def refresh_token(request: RefreshRequest, db: Session = Depends(get_db)):
     return tokens
 
 
+# ─────────────────────────────
+# ME
+# ─────────────────────────────
 @router.get("/me", response_model=UserResponse)
 async def me(request: Request, db: Session = Depends(get_db)):
     token = request.cookies.get("access_token")
 
     if not token:
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:]
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            token = auth[7:]
 
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -158,10 +151,13 @@ async def me(request: Request, db: Session = Depends(get_db)):
 
     return user
 
+
+# ─────────────────────────────
+# LOGOUT
+# ─────────────────────────────
 @router.post("/logout")
 async def logout():
-    response = JSONResponse(content={"message": "Logged out"})
-    response.delete_cookie("access_token", secure=True, samesite="none")
-    response.delete_cookie("refresh_token", secure=True, samesite="none")
+    response = JSONResponse({"message": "Logged out"})
+    response.delete_cookie("access_token", httponly=True, secure=True, samesite="none")
+    response.delete_cookie("refresh_token", httponly=True, secure=True, samesite="none")
     return response
-

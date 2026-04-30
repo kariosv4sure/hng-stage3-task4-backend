@@ -1,7 +1,8 @@
 import json
 import base64
 import httpx
-from fastapi import HTTPException, status
+
+from fastapi import HTTPException
 
 from app.config import (
     GITHUB_CLIENT_ID,
@@ -21,13 +22,28 @@ def _decode(data: str) -> dict:
     return json.loads(base64.urlsafe_b64decode(data.encode()).decode())
 
 
-def build_authorization_url(redirect_uri: str) -> dict:
-    code_verifier, code_challenge = generate_pkce_pair()
+# ─────────────────────────────
+# AUTH URL BUILDER (FIXED)
+# ─────────────────────────────
+def build_authorization_url(redirect_uri: str, client: str = "web") -> dict:
+    """
+    CLI = NO PKCE
+    WEB = PKCE enabled
+    """
 
-    state_payload = {
-        "state": generate_state(),
-        "code_verifier": code_verifier,
-    }
+    state_payload = {"state": generate_state(), "client": client}
+
+    code_verifier = None
+    pkce_params = ""
+
+    if client == "web":
+        code_verifier, code_challenge = generate_pkce_pair()
+        state_payload["code_verifier"] = code_verifier
+
+        pkce_params = (
+            f"&code_challenge={code_challenge}"
+            f"&code_challenge_method=S256"
+        )
 
     encoded_state = _encode(state_payload)
 
@@ -36,38 +52,50 @@ def build_authorization_url(redirect_uri: str) -> dict:
         f"client_id={GITHUB_CLIENT_ID}&"
         f"redirect_uri={redirect_uri}&"
         f"scope=read:user user:email&"
-        f"state={encoded_state}&"
-        f"code_challenge={code_challenge}&"
-        f"code_challenge_method=S256"
+        f"state={encoded_state}"
+        f"{pkce_params}"
     )
 
     return {
         "auth_url": auth_url,
         "state": encoded_state,
+        "code_verifier": code_verifier,
     }
 
 
-def extract_state(state: str) -> dict:
+# ─────────────────────────────
+# STATE DECODER (SAFE)
+# ─────────────────────────────
+def extract_state(state: str) -> dict | None:
     try:
         return _decode(state)
     except Exception:
-        raise HTTPException(
-            status_code=400,
-            detail={"status": "error", "message": "Invalid OAuth state"},
-        )
+        return None
 
 
-async def exchange_code_for_token(code: str, redirect_uri: str, code_verifier: str):
+# ─────────────────────────────
+# TOKEN EXCHANGE (FIXED)
+# ─────────────────────────────
+async def exchange_code_for_token(
+    code: str,
+    redirect_uri: str,
+    code_verifier: str | None = None
+):
+    payload = {
+        "client_id": GITHUB_CLIENT_ID,
+        "client_secret": GITHUB_CLIENT_SECRET,
+        "code": code,
+        "redirect_uri": redirect_uri,
+    }
+
+    # ONLY include for web flow
+    if code_verifier:
+        payload["code_verifier"] = code_verifier
+
     async with httpx.AsyncClient() as client:
         response = await client.post(
             GITHUB_TOKEN_URL,
-            data={
-                "client_id": GITHUB_CLIENT_ID,
-                "client_secret": GITHUB_CLIENT_SECRET,
-                "code": code,
-                "redirect_uri": redirect_uri,
-                "code_verifier": code_verifier,
-            },
+            data=payload,
             headers={"Accept": "application/json"},
         )
 
@@ -82,6 +110,9 @@ async def exchange_code_for_token(code: str, redirect_uri: str, code_verifier: s
     return data
 
 
+# ─────────────────────────────
+# GITHUB USER FETCH
+# ─────────────────────────────
 async def get_github_user(access_token: str):
     async with httpx.AsyncClient() as client:
         response = await client.get(
@@ -92,12 +123,10 @@ async def get_github_user(access_token: str):
             },
         )
 
-    data = response.json()
-
     if response.status_code != 200:
         raise HTTPException(
             status_code=400,
             detail={"status": "error", "message": "Failed to fetch GitHub user"},
         )
 
-    return data
+    return response.json()
