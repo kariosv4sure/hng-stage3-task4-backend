@@ -73,20 +73,35 @@ app.include_router(auth.router)
 # DIRECT ROUTES FOR GRADER
 # ─────────────────────────────────
 
-@app.get("/api/users/me")
-async def api_users_me(request: Request, db: Session = Depends(get_db)):
+def _get_token_from_request(request: Request) -> str | None:
     token = request.cookies.get("access_token")
     if not token:
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:]
+    return token
+
+
+def _verify_token(request: Request):
+    token = _get_token_from_request(request)
     if not token:
         raise HTTPException(status_code=401, detail={"status": "error", "message": "Not authenticated"})
-
     payload = verify_access_token(token)
     if not payload:
         raise HTTPException(status_code=401, detail={"status": "error", "message": "Invalid or expired token"})
+    return payload
 
+
+def _require_admin(request: Request):
+    payload = _verify_token(request)
+    if payload.get("role") != "admin":
+        raise HTTPException(status_code=403, detail={"status": "error", "message": "Admin access required"})
+    return payload
+
+
+@app.get("/api/users/me")
+async def api_users_me(request: Request, db: Session = Depends(get_db)):
+    payload = _verify_token(request)
     user = AuthService.get_user_by_id(db, payload["sub"])
     if not user:
         raise HTTPException(status_code=404, detail={"status": "error", "message": "User not found"})
@@ -103,20 +118,10 @@ async def api_users_me(request: Request, db: Session = Depends(get_db)):
 
 @app.get("/api/profiles")
 async def api_profiles_get(request: Request, db: Session = Depends(get_db)):
-    token = request.cookies.get("access_token")
-    if not token:
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:]
-    if not token:
-        raise HTTPException(status_code=401, detail={"status": "error", "message": "Not authenticated"})
-
-    payload = verify_access_token(token)
-    if not payload:
-        raise HTTPException(status_code=401, detail={"status": "error", "message": "Invalid or expired token"})
+    _verify_token(request)
 
     from app.services.profile_service import ProfileService
-    
+
     page = int(request.query_params.get("page", 1))
     limit = int(request.query_params.get("limit", 10))
     profiles, total = ProfileService.get_all_filtered(db=db, page=page, limit=limit)
@@ -139,20 +144,7 @@ async def api_profiles_get(request: Request, db: Session = Depends(get_db)):
 
 @app.post("/api/profiles")
 async def api_profiles_post(request: Request, db: Session = Depends(get_db)):
-    token = request.cookies.get("access_token")
-    if not token:
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:]
-    if not token:
-        raise HTTPException(status_code=401, detail={"status": "error", "message": "Not authenticated"})
-
-    payload = verify_access_token(token)
-    if not payload:
-        raise HTTPException(status_code=401, detail={"status": "error", "message": "Invalid or expired token"})
-
-    if payload.get("role") != "admin":
-        raise HTTPException(status_code=403, detail={"status": "error", "message": "Admin access required"})
+    _require_admin(request)
 
     from app.services.profile_service import ProfileService
     try:
@@ -169,6 +161,19 @@ async def api_profiles_post(request: Request, db: Session = Depends(get_db)):
         "status": "success",
         "data": {"id": str(profile.id), "name": profile.name, "gender": profile.gender},
     }, status_code=201)
+
+
+@app.delete("/api/profiles/{profile_id}")
+async def api_profiles_delete(profile_id: str, request: Request, db: Session = Depends(get_db)):
+    _require_admin(request)
+
+    from app.services.profile_service import ProfileService
+    profile = ProfileService.get_by_id(db, profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail={"status": "error", "message": "Profile not found"})
+
+    ProfileService.delete(db, profile)
+    return Response(status_code=204)
 
 
 @app.get("/api/export/profiles")
