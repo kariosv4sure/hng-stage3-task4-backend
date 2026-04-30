@@ -3,7 +3,7 @@ from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies.roles import require_admin
+from app.dependencies.roles import require_analyst
 from app.services.export_service import ExportService
 
 router = APIRouter(prefix="/export", tags=["Export"])
@@ -12,7 +12,7 @@ router = APIRouter(prefix="/export", tags=["Export"])
 @router.get(
     "/profiles",
     response_class=PlainTextResponse,
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_analyst)],
 )
 async def export_profiles_csv(db: Session = Depends(get_db)):
     """Export all profiles as CSV (admin only)."""
